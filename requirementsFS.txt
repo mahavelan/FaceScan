@@ -1,9 +1,11 @@
 streamlit
 face_recognition
-opencv-python-headless
+opencv-contrib-python-headless==4.9.0.80
 pandas
 numpy
 openpyxl
 xlrd
 Pillow
 python-dateutil
+cmake
+dlib
