@@ -1,7 +1,9 @@
 streamlit
 face_recognition
-opencv-python
+opencv-python-headless
 pandas
 numpy
 openpyxl
 xlrd
+Pillow
+python-dateutil
