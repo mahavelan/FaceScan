@@ -1,179 +1,131 @@
-# app.py
 import streamlit as st
 import os
-import zipfile
 import cv2
-import tempfile
 import face_recognition
 import pandas as pd
-from datetime import datetime, timedelta
+import numpy as np
+from datetime import datetime
+from PIL import Image
+import tempfile
 
-# --- FACE UTILS (merged from face_recognition_utils.py) ---
-def load_student_encodings(directory):
-    known_faces = {}
-    for filename in os.listdir(directory):
-        if filename.lower().endswith(('png', 'jpg', 'jpeg')):
-            path = os.path.join(directory, filename)
-            image = face_recognition.load_image_file(path)
-            encodings = face_recognition.face_encodings(image)
-            if encodings:
-                key = filename.rsplit('.', 1)[0]  # Name_RegisterNo
-                known_faces[key] = encodings[0]
-    return known_faces
+# Load Haar Cascade
+CASCADE_PATH = "haarcascade_frontalface_default.xml"
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + CASCADE_PATH)
 
-def recognize_faces(face_encodings, known_faces):
+# Directories
+REG_DIR = "registered_faces"
+if not os.path.exists(REG_DIR):
+    os.makedirs(REG_DIR)
+
+ATTENDANCE_LOG = "attendance.csv"
+
+# Helper Functions
+def get_encoded_faces():
+    encoded = []
     names = []
-    for face_encoding in face_encodings:
-        matches = face_recognition.compare_faces(list(known_faces.values()), face_encoding)
-        name = "Unknown"
-        if True in matches:
-            first_match_index = matches.index(True)
-            name = list(known_faces.keys())[first_match_index]
-        names.append(name)
-    return names
+    registers = []
+    for file in os.listdir(REG_DIR):
+        if file.endswith(".jpg") or file.endswith(".png"):
+            path = os.path.join(REG_DIR, file)
+            img = face_recognition.load_image_file(path)
+            encoding = face_recognition.face_encodings(img)
+            if encoding:
+                encoded.append(encoding[0])
+                name = os.path.splitext(file)[0].split("_")
+                names.append(name[0])
+                registers.append(name[1])
+    return encoded, names, registers
 
-def recognize_faces_from_excel(df, image_folder):
-    known_faces = {}
-    for _, row in df.iterrows():
-        name = str(row['Name']).strip()
-        reg = str(row['Register Number']).strip()
-        img_file = str(row['Image Filename']).strip()
-        img_path = os.path.join(image_folder, img_file)
-        if os.path.exists(img_path):
-            image = face_recognition.load_image_file(img_path)
-            encodings = face_recognition.face_encodings(image)
-            if encodings:
-                key = f"{name}_{reg}"
-                known_faces[key] = encodings[0]
-    return known_faces
+def mark_attendance(name, reg):
+    now = datetime.now()
+    date = now.strftime("%Y-%m-%d")
+    time = now.strftime("%H:%M:%S")
 
-# --- STREAMLIT APP START ---
-st.set_page_config(page_title="Face Recognition Attendance", layout="centered")
-st.image("https://img.icons8.com/emoji/96/face-with-monocle.png", width=100)
-st.title("FaceScan: AI-Based Attendance System")
+    if not os.path.exists(ATTENDANCE_LOG):
+        with open(ATTENDANCE_LOG, "w") as f:
+            f.write("Name,RegisterNumber,Date,Time\n")
 
-if 'attendance' not in st.session_state:
-    st.session_state.attendance = {}
+    df = pd.read_csv(ATTENDANCE_LOG)
+    if not ((df['Name'] == name) & (df['RegisterNumber'] == reg) & (df['Date'] == date)).any():
+        with open(ATTENDANCE_LOG, "a") as f:
+            f.write(f"{name},{reg},{date},{time}\n")
 
-st.sidebar.title("Navigation")
-page = st.sidebar.radio("Go to", ["📸 Take Attendance", "📂 Upload Data", "📊 View History"])
+# UI
+st.set_page_config(layout="wide")
+st.title("📸 Face Recognition Attendance System")
 
-if page == "📂 Upload Data":
-    st.header("Upload Student Database")
-    db_zip = st.file_uploader("Upload ZIP file of face images", type="zip")
-    db_excel = st.file_uploader("(Optional) Excel file with Name, Register Number, Image Filename", type=["xlsx", "xls", "csv"])
+menu = ["Upload Student Photos", "Take Attendance", "Attendance History"]
+choice = st.sidebar.selectbox("Select Option", menu)
 
-    use_excel = False
+if choice == "Upload Student Photos":
+    st.subheader("🧑‍💼 Register Students")
+    uploaded_file = st.file_uploader("Upload Image", type=["jpg", "png"])
+    name = st.text_input("Student Name")
+    reg = st.text_input("Register Number")
+    if uploaded_file and name and reg:
+        img = Image.open(uploaded_file)
+        save_path = os.path.join(REG_DIR, f"{name}_{reg}.jpg")
+        img.save(save_path)
+        st.success(f"✅ {name} registered successfully")
 
-    if db_zip:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            zip_path = os.path.join(tmpdir, "students.zip")
-            with open(zip_path, "wb") as f:
-                f.write(db_zip.read())
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall("student_database")
-            st.success("✅ Student images extracted.")
+elif choice == "Take Attendance":
+    st.subheader("📷 Webcam Attendance")
+    start = st.button("Start Camera and Recognize Faces")
 
-            if db_excel:
-                try:
-                    if db_excel.name.endswith(".csv"):
-                        df = pd.read_csv(db_excel)
-                    else:
-                        df = pd.read_excel(db_excel)
-                    st.session_state.known_faces = recognize_faces_from_excel(df, "student_database")
-                    use_excel = True
-                    st.success(f"Loaded {len(st.session_state.known_faces)} students from Excel.")
-                except Exception as e:
-                    st.error(f"Error loading Excel: {e}")
-            else:
-                st.session_state.known_faces = load_student_encodings("student_database")
-                st.success(f"Loaded {len(st.session_state.known_faces)} students from image filenames.")
+    if start:
+        known_faces, known_names, known_regs = get_encoded_faces()
+        present_students = set()
 
-elif page == "📸 Take Attendance":
-    st.header("Take Attendance via Webcam")
-    if st.button("Start Attendance"):
-        if 'known_faces' not in st.session_state:
-            st.error("Please upload student data first.")
-        else:
-            cap = cv2.VideoCapture(0)
-            stframe = st.empty()
-            detected_students = set()
+        cap = cv2.VideoCapture(0)
+        stframe = st.empty()
+        end_btn = st.button("End Attendance")
 
-            with st.spinner("Scanning... Show faces to the webcam. Press 'Q' to stop."):
-                while True:
-                    ret, frame = cap.read()
-                    if not ret:
-                        break
-                    small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
-                    rgb_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = face_cascade.detectMultiScale(gray, 1.3, 5)
 
-                    face_locations = face_recognition.face_locations(rgb_frame)
-                    face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            encodings = face_recognition.face_encodings(rgb_frame)
+            names_seen = []
 
-                    names = recognize_faces(face_encodings, st.session_state.known_faces)
+            for encoding in encodings:
+                matches = face_recognition.compare_faces(known_faces, encoding)
+                face_distances = face_recognition.face_distance(known_faces, encoding)
+                best_match_index = np.argmin(face_distances)
+                if matches[best_match_index]:
+                    name = known_names[best_match_index]
+                    reg = known_regs[best_match_index]
+                    names_seen.append((name, reg))
+                    mark_attendance(name, reg)
 
-                    for name in names:
-                        if name != "Unknown":
-                            detected_students.add(name)
+            for (x, y, w, h) in faces:
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
 
-                    for (top, right, bottom, left), name in zip(face_locations, names):
-                        top *= 4
-                        right *= 4
-                        bottom *= 4
-                        left *= 4
-                        cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
-                        cv2.putText(frame, name, (left, top - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 0, 0), 2)
+            stframe.image(frame, channels="BGR")
+            if end_btn:
+                break
+        cap.release()
+        st.success("✅ Attendance session ended")
 
-                    stframe.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), channels="RGB")
+elif choice == "Attendance History":
+    st.subheader("📅 Attendance Logs")
+    if os.path.exists(ATTENDANCE_LOG):
+        df = pd.read_csv(ATTENDANCE_LOG)
+        date_filter = st.date_input("Select Date to Filter")
+        filtered = df[df['Date'] == date_filter.strftime("%Y-%m-%d")]
+        st.dataframe(filtered)
 
-                    if cv2.waitKey(1) & 0xFF == ord('q'):
-                        break
+        total = len(set(df[df['Date'] == date_filter.strftime("%Y-%m-%d")]['RegisterNumber']))
+        all_regs = set(name.split("_")[1] for name in os.listdir(REG_DIR))
+        absent = all_regs - set(filtered['RegisterNumber'])
 
-            cap.release()
-            cv2.destroyAllWindows()
-
-            # Attendance Report
-            all_students = list(st.session_state.known_faces.keys())
-            present = list(detected_students)
-            absent = list(set(all_students) - detected_students)
-
-            data = []
-            for student in all_students:
-                status = "Present" if student in present else "Absent"
-                if "_" in student:
-                    name, regno = student.split("_", 1)
-                else:
-                    name, regno = student, ""
-                data.append({"Name": name, "Register Number": regno, "Status": status})
-
-            df = pd.DataFrame(data)
-            st.header("📋 Attendance Summary")
-            st.write(df)
-            st.success(f"✅ Total: {len(all_students)}, Present: {len(present)}, Absent: {len(absent)}")
-
-            # Save attendance CSV
-            os.makedirs("attendance_records", exist_ok=True)
-            date_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            filename = f"attendance_{date_str}.csv"
-            df.to_csv(f"attendance_records/{filename}", index=False)
-            st.download_button("Download CSV", df.to_csv(index=False), file_name=filename)
-
-elif page == "📊 View History":
-    st.header("📊 Attendance History (Last 90 Days)")
-    history_path = "attendance_records"
-    os.makedirs(history_path, exist_ok=True)
-    history_files = sorted(os.listdir(history_path), reverse=True)
-
-    if history_files:
-        for file in history_files:
-            file_path = os.path.join(history_path, file)
-            try:
-                file_date = datetime.strptime(file.replace("attendance_", "").replace(".csv", ""), "%Y-%m-%d_%H-%M-%S")
-                if datetime.now() - file_date <= timedelta(days=90):
-                    st.subheader(f"🗓️ {file_date.strftime('%B %d, %Y %H:%M:%S')}")
-                    df = pd.read_csv(file_path)
-                    st.dataframe(df)
-            except:
-                continue
+        st.info(f"✅ Total Present: {len(filtered)}")
+        st.warning(f"❌ Total Absent: {len(absent)}")
+        if absent:
+            st.write("### Absent Students")
+            st.write(list(absent))
     else:
-        st.info("No attendance records found.")
+        st.warning("No attendance log found. Please take attendance first.")
