@@ -1,6 +1,6 @@
 streamlit
 opencv-python-headless==4.5.5.64
-face_recognition @ git+https://github.com/masoudr/face_recognition.git
+face_recognition 
 cmake==3.22.1
 numpy
 pandas
